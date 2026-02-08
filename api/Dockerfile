@@ -6,11 +6,12 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # 依存を先に入れてキャッシュを効かせる
-COPY requirements.txt /app/requirements.txt
+COPY api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # アプリ本体
-COPY app /app/app
+COPY api/app /app/app
+COPY agentic /app/agentic
 
 EXPOSE 8000
 
