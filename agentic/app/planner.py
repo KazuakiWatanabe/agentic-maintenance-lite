@@ -77,7 +77,7 @@ class PlannerAgent:
         summary_text = summary.strip()
         if issues:
             summary_text = self._repair_summary(summary_text)
-            tasks_payload = self._repair_tasks(tasks_payload, issues)
+            tasks_payload = self._repair_tasks(tasks_payload, issues, event, event_kind)
 
         # 主要変数: plan_payload は最終的にMaintenancePlanへ変換する辞書本体。
         plan_payload = {
@@ -299,28 +299,35 @@ class PlannerAgent:
         self,
         tasks_payload: list[dict[str, Any]],
         issues: list[Issue],
+        event: dict[str, Any],
+        event_kind: str,
     ) -> list[dict[str, Any]]:
         """Validator issuesをもとにタスク内容を補正する。
 
         Args:
             tasks_payload: 補正対象のタスク辞書列。
             issues: Validatorから渡された不備一覧。
+            event: 入力イベント辞書。
+            event_kind: 正規化済みイベント種別。
 
         Returns:
             list[dict[str, Any]]: 補正済みタスク辞書列。
 
         Note:
-            `TASKS_EMPTY` の指摘がある場合のみタスクを既定値で再生成し、その後全タスクを正規化する。
+            SCHEMA系Issueで最低限の構造補正を行い、BUSINESS系Issueでは追加/削減/工数調整で再検証通過を狙う。
 
         Variables:
-            has_tasks_empty: TASKS_EMPTYがissuesに含まれるかどうか。
+            issue_codes: 今回の修正で対象とするIssueコード集合。
+            has_tasks_empty: SCHEMA_TASKS_EMPTYがissuesに含まれるかどうか。
             repaired_tasks: 補正処理中のタスクリスト。
             normalized_notes: 空文字を除去した安全注意事項。
         """
+        # 主要変数: issue_codes は補正対象判定に使うIssueコード集合。
+        issue_codes = {issue.code for issue in issues}
         # 主要変数: has_tasks_empty はタスク再生成の要否判定に使う。
-        has_tasks_empty = any(issue.code == "TASKS_EMPTY" for issue in issues)
+        has_tasks_empty = "SCHEMA_TASKS_EMPTY" in issue_codes
         if has_tasks_empty or not tasks_payload:
-            tasks_payload = self._build_tasks("anomaly")
+            tasks_payload = self._build_tasks(event_kind)
 
         # 主要変数: repaired_tasks は順次補正したタスクを格納する。
         repaired_tasks: list[dict[str, Any]] = []
@@ -355,7 +362,204 @@ class PlannerAgent:
             repaired["safety_notes"] = normalized_notes
             repaired_tasks.append(repaired)
 
+        if "BUSINESS_REQUIRED_TASK_MISSING" in issue_codes:
+            self._add_required_task_for_event_kind(repaired_tasks, event_kind)
+        if "BUSINESS_SAFETY_STOP_REQUIRED" in issue_codes:
+            self._add_safety_stop_task(repaired_tasks)
+        if "BUSINESS_CONTACT_REQUIRED" in issue_codes:
+            self._add_contact_task(repaired_tasks)
+        if "BUSINESS_TOO_MANY_TASKS" in issue_codes and len(repaired_tasks) > 8:
+            repaired_tasks = repaired_tasks[:8]
+        if "BUSINESS_MAX_TOTAL_MINUTES_EXCEEDED" in issue_codes:
+            self._shrink_total_minutes(repaired_tasks, limit_minutes=240)
+
         return repaired_tasks
+
+    def _add_required_task_for_event_kind(
+        self,
+        tasks_payload: list[dict[str, Any]],
+        event_kind: str,
+    ) -> None:
+        """event種別ごとの必須タスクを補完する。
+
+        Args:
+            tasks_payload: 補完対象タスクリスト。
+            event_kind: `temperature` / `vibration` / `anomaly`。
+
+        Returns:
+            None
+
+        Note:
+            対象キーワードを含むタスクが存在する場合は追加しない。
+
+        Variables:
+            requirement_map: 種別ごとの判定キーワードと補完タスク定義。
+            existing_text: 既存タスク判定に使う結合文字列。
+        """
+        # 主要変数: requirement_map は種別ごとの補完内容を保持する。
+        requirement_map = {
+            "temperature": {
+                "keywords": ["sensor", "threshold", "センサー", "閾値"],
+                "task": {
+                    "id": "temperature-required",
+                    "title": "Sensor check and threshold confirm",
+                    "description": "温度センサー点検と閾値確認を実施する。",
+                    "priority": 2,
+                    "estimated_minutes": 20,
+                    "safety_notes": ["確認時は設備状態と安全手順を遵守する。"],
+                },
+            },
+            "vibration": {
+                "keywords": ["bearing", "fixture", "ベアリング", "固定具"],
+                "task": {
+                    "id": "vibration-required",
+                    "title": "Bearing/fixture check",
+                    "description": "ベアリングと固定具の状態を確認する。",
+                    "priority": 2,
+                    "estimated_minutes": 20,
+                    "safety_notes": ["回転部停止を確認してから点検する。"],
+                },
+            },
+            "anomaly": {
+                "keywords": ["safety", "安全", "安全確認"],
+                "task": {
+                    "id": "anomaly-required",
+                    "title": "Safety confirm",
+                    "description": "現場安全を確認してから一次対応を開始する。",
+                    "priority": 1,
+                    "estimated_minutes": 15,
+                    "safety_notes": ["周囲安全と退避経路を確保する。"],
+                },
+            },
+        }
+        selected = requirement_map.get(event_kind, requirement_map["anomaly"])
+        keywords = selected["keywords"]
+        for task in tasks_payload:
+            # 主要変数: existing_text はキーワード存在判定に使う文字列。
+            existing_text = (
+                f"{task.get('title', '')} {task.get('description', '')} "
+                f"{' '.join(task.get('safety_notes', []))}"
+            ).lower()
+            if any(keyword.lower() in existing_text for keyword in keywords):
+                return
+        tasks_payload.append(dict(selected["task"]))
+
+    def _add_safety_stop_task(self, tasks_payload: list[dict[str, Any]]) -> None:
+        """停止/隔離タスクを必要時に追加する。
+
+        Args:
+            tasks_payload: 補完対象タスクリスト。
+
+        Returns:
+            None
+
+        Note:
+            停止/隔離キーワードを含むタスクが既に存在する場合は追加しない。
+
+        Variables:
+            keywords: 停止/隔離判定キーワード。
+            text: 各タスク判定に使う結合文字列。
+            stop_task: 追加する停止/隔離タスク定義。
+        """
+        # 主要変数: keywords は停止/隔離タスクの存在判定で使用する。
+        keywords = ["stop", "isolate", "停止", "隔離", "緊急停止"]
+        for task in tasks_payload:
+            # 主要変数: text はキーワード一致判定に使う文字列。
+            text = f"{task.get('title', '')} {task.get('description', '')}".lower()
+            if any(keyword.lower() in text for keyword in keywords):
+                return
+        # 主要変数: stop_task は不足時に先頭追加する安全タスク。
+        stop_task = {
+            "id": "safety-stop-required",
+            "title": "Stop/Isolating task",
+            "description": "重大度が高いため設備停止と隔離を実施する。",
+            "priority": 1,
+            "estimated_minutes": 15,
+            "safety_notes": ["停止と隔離完了後に次工程へ進む。"],
+        }
+        tasks_payload.insert(0, stop_task)
+
+    def _add_contact_task(self, tasks_payload: list[dict[str, Any]]) -> None:
+        """記録/報告タスクを必要時に追加する。
+
+        Args:
+            tasks_payload: 補完対象タスクリスト。
+
+        Returns:
+            None
+
+        Note:
+            記録/報告キーワードを含むタスクが既に存在する場合は追加しない。
+
+        Variables:
+            keywords: 記録/報告判定キーワード。
+            text: 各タスク判定に使う結合文字列。
+            contact_task: 追加する記録/報告タスク定義。
+        """
+        # 主要変数: keywords は記録/報告タスク存在判定に使う。
+        keywords = ["record", "report", "記録", "報告", "連絡"]
+        for task in tasks_payload:
+            # 主要変数: text はキーワード一致判定に使う文字列。
+            text = f"{task.get('title', '')} {task.get('description', '')}".lower()
+            if any(keyword.lower() in text for keyword in keywords):
+                return
+        # 主要変数: contact_task は末尾に追加する運用タスク。
+        contact_task = {
+            "id": "contact-required",
+            "title": "Record/Report task",
+            "description": "対応結果を記録し、関係者へ報告する。",
+            "priority": 4,
+            "estimated_minutes": 10,
+            "safety_notes": ["記録時刻と連絡先を漏れなく記載する。"],
+        }
+        tasks_payload.append(contact_task)
+
+    def _shrink_total_minutes(
+        self,
+        tasks_payload: list[dict[str, Any]],
+        limit_minutes: int,
+    ) -> None:
+        """総工数が上限を超える場合に縮減する。
+
+        Args:
+            tasks_payload: 調整対象タスクリスト。
+            limit_minutes: 許容する総工数上限。
+
+        Returns:
+            None
+
+        Note:
+            まず低優先タスクの工数を縮め、解消しない場合は末尾タスクを削除する。
+
+        Variables:
+            total_minutes: 現在の工数合計。
+            candidate_indexes: 縮減対象候補のインデックス一覧。
+            index: ループ中の対象インデックス。
+        """
+        # 主要変数: total_minutes は現在の工数合計。
+        total_minutes = sum(
+            int(task.get("estimated_minutes", 0)) for task in tasks_payload
+        )
+        if total_minutes <= limit_minutes:
+            return
+
+        # 主要変数: candidate_indexes は低優先タスク優先で並べる候補一覧。
+        candidate_indexes = sorted(
+            range(len(tasks_payload)),
+            key=lambda idx: int(tasks_payload[idx].get("priority", 5)),
+            reverse=True,
+        )
+        for index in candidate_indexes:
+            while total_minutes > limit_minutes:
+                current = int(tasks_payload[index].get("estimated_minutes", 0))
+                if current <= 5:
+                    break
+                tasks_payload[index]["estimated_minutes"] = current - 5
+                total_minutes -= 5
+
+        while total_minutes > limit_minutes and len(tasks_payload) > 1:
+            removed = tasks_payload.pop()
+            total_minutes -= int(removed.get("estimated_minutes", 0))
 
     def _construct_without_validation(
         self,

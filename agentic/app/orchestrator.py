@@ -129,7 +129,7 @@ class MaintenanceOrchestrator:
         # 主要変数: plan はretry中に更新される現在の計画モデル。
         plan = self._planner.plan(event, summary, issues=None)
         # 主要変数: issues は直近検証結果で、各ループで上書きする。
-        issues = self._validator.validate(plan)
+        issues = self._validator.validate(plan, event)
         # 主要変数: retry_count はPlanner再実行回数を示す。
         retry_count = 0
         # 主要変数: latest_issue_codes はログやAPI層連携に使うIssueコード一覧。
@@ -139,7 +139,7 @@ class MaintenanceOrchestrator:
             latest_issue_codes = [issue.code for issue in issues]
             retry_count += 1
             plan = self._planner.plan(event, summary, issues=issues)
-            issues = self._validator.validate(plan)
+            issues = self._validator.validate(plan, event)
 
         self.last_retry_count = retry_count
         self.last_issue_codes = latest_issue_codes

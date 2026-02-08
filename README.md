@@ -63,6 +63,8 @@ docker compose exec postgres psql -U agentic -d agentic -c "SELECT id, device_id
 
 ## Verification（v0.1 / v0.2）
 
+Issueコード体系: `docs/issue_codes.md`
+
 ### 1. 共通：クリーン起動（DB含め完全リセット）
 
 ```bash
@@ -182,8 +184,28 @@ docker compose up -d --build
 ログ例:
 
 ```text
-plan.generate event_id=12 retry=1 issues=['INVALID_PRIORITY']
+plan.generate event_id=12 retry=1 issues=['SCHEMA_INVALID_PRIORITY']
 ```
+
+## Retry Strategy
+
+- retry発生条件: Validator が `issues[]` を返した場合のみ
+- retry回数: 最大2回（初回 + retry2回で終了）
+- issues の扱い:
+  - retry時は「直前の issues」を Planner に渡して修正する
+  - issues は累積せず、最新検証結果で上書きする
+- 失敗時挙動:
+  - 2回のretry後も issues が残る場合は `HTTP 422`
+  - 返却ボディに `issues[]`（`code`, `message`, `path`）を含める
+- ログ:
+  - `event_id`, `retry_count`, `issue_codes` を INFO で出力する
+
+## Plan Versioning
+
+- `plan.version` はAPI互換境界として扱う
+- v0.2 の `MaintenancePlan.version` はコード側で固定値 `"0.2"`（外部入力で変更不可）
+- Generator は `model_dump()` の `version` をそのまま `plans.plan_json` に保存する
+- 将来 `v0.3` で plan 構造を変更する場合にのみ `version` を変更する
 
 ## API仕様（v0.1）
 
