@@ -1,39 +1,67 @@
 # lumada-oss-lite
-Lumada的な「データ収集 → 統合 → 可視化 → AI（Agentic）による業務設計」を、OSSのみで再現する軽量PoC。
 
-## 目的
-- テンプレを当てるだけではなく、PoCの検討開始時点で **適切な方向性 × 有効なスコープサイズ** を固定し、成功確率を最大化する
-- “AIは手段”として、検討空間（スコープ）の設計を中心に据える
+Lumada的な「データ収集 → 統合 → 可視化 → AI（Agentic）」をOSSのみで再現する軽量PoCです。  
+PoC v0.1は、Docker Composeのみでローカル起動できる最小構成に限定しています。
 
-## 何ができるか（PoC v1）
-- MQTT（擬似センサ/ログ）を取り込み
-- PostgreSQL に保存
-- Grafana で可視化
-- 異常イベント発生時に Agentic（reader/planner/validator/generator）が
-  - 事象を要約し
-  - 保守作業計画（実行可能JSON）を生成する
+## v0.1 成功定義
 
+- `docker compose up -d --build` のみで主要サービスが起動する
+- MQTT -> ingestion -> API -> PostgreSQL のデータ経路で `events` に保存できる
+- `GET /health` が `200` を返す
+- Grafana が起動し、PostgreSQL datasource が provisioning 済み
 
-## Branch Strategy
-- main: 常に動く（デモ可能／READMEとcomposeが整っている状態）
-- develop: 次リリース候補の統合先
-- feature/*: 機能追加（短命）
-- fix/*: バグ修正（短命）
-- docs/*: ドキュメントのみ（短命）
+## 前提
 
-## アーキテクチャ（軽量）
-Device Simulator → MQTT(Mosquitto)
-↓
-Ingest API(FastAPI)
-↓
-PostgreSQL
-↓ ↓
-Grafana Dashboard Agentic(AI)
-- reader: 異常要約
-- planner: 作業案
-- validator: 検証 + retry判定
-- generator: 実行可能JSON生成
+- Windows 11 + Docker Desktop（または同等のDocker実行環境）
+- ホストへの Python / PostgreSQL / Grafana / Mosquitto の個別インストールは不要
 
-## Release / Tags
-- vMAJOR.MINOR.PATCH（例: v0.1.0）
-- mainにマージしたタイミングでタグを付け、CHANGELOGを確定する
+## クイックスタート
+
+1. 起動
+
+```bash
+docker compose up -d --build
+```
+
+2. ヘルスチェック
+
+```bash
+curl http://localhost:8000/health
+```
+
+期待値:
+
+```json
+{"status":"ok"}
+```
+
+3. MQTTイベント送信（Compose内のmosquittoクライアントを使用）
+
+```bash
+docker compose exec mosquitto mosquitto_pub -h localhost -p 1883 -t telemetry/device-001 -m "{\"device_id\":\"device-001\",\"event_type\":\"temperature_alert\",\"ts\":\"2026-02-08T00:00:00Z\",\"payload\":{\"value\":95.1,\"unit\":\"C\"}}"
+```
+
+4. PostgreSQL保存確認
+
+```bash
+docker compose exec postgres psql -U agentic -d agentic -c "SELECT id, device_id, event_type, ts FROM events ORDER BY id DESC LIMIT 5;"
+```
+
+5. Grafana確認
+
+- URL: `http://localhost:3000`
+- ユーザー: `admin`
+- パスワード: `admin`
+- `Postgres` datasource が自動作成済み
+
+## API仕様（v0.1）
+
+- `GET /health` -> `{"status":"ok"}`
+- `POST /ingest`
+  - 入力: `device_id`, `event_type`, `ts`, `payload`
+  - 動作: `events` へINSERT
+  - 出力: `{"ok": true}`
+
+## v0.1 スコープ外
+
+ClickHouse / Kafka / MinIO / Airflow / Spark / MLflow / Kubernetes は導入しません。

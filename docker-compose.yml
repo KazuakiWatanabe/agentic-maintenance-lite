@@ -1,0 +1,82 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    # configはPoC v0.1では不要（デフォルトでOK）
+    # volumes:
+    #   - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: agentic
+      POSTGRES_USER: agentic
+      POSTGRES_PASSWORD: agentic
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/initdb/01_create_tables.sql:/docker-entrypoint-initdb.d/01_create_tables.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentic -d agentic"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./api
+    environment:
+      # psycopg用。ホスト名はサービス名 postgres を使う
+      DATABASE_URL: postgresql://agentic:agentic@postgres:5432/agentic
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # curlを入れない方針のため、pythonで簡易チェック（/health を叩かない）
+      # 目的: プロセスが生きているか最低限確認
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.socket(); s.connect(('127.0.0.1',8000)); s.close()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  ingestion:
+    build:
+      context: ./ingestion
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: telemetry/#
+      API_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./dashboard/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  grafana_data:
