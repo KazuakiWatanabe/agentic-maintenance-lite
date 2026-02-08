@@ -26,7 +26,8 @@ services:
 
   api:
     build:
-      context: ./api
+      context: .
+      dockerfile: api/Dockerfile
     environment:
       # psycopg用。ホスト名はサービス名 postgres を使う
       DATABASE_URL: postgresql://agentic:agentic@postgres:5432/agentic
