@@ -19,8 +19,8 @@ from app.settings import get_settings
 
 # 主要変数: router は計画生成関連エンドポイントを束ねる。
 router = APIRouter()
-# 主要変数: logger は障害時の最小ログ出力に使用する。
-logger = logging.getLogger(__name__)
+# 主要変数: logger はAPIログへretry情報を出力する。
+logger = logging.getLogger("uvicorn.error")
 
 
 @router.post("/plan/generate")
@@ -45,6 +45,8 @@ def generate_plan(event_id: int = Query(..., ge=1)) -> dict:
         orchestrator: v0.2標準Agent構成。
         plan_json: 生成された保守計画dict。
         saved_plan: DB保存後の計画レコード辞書。
+        retry_count: Orchestratorが実施したretry回数。
+        issues_codes: retry原因となったIssueコード一覧。
     """
     try:
         # 主要変数: settings はDB接続URLを保持する設定。
@@ -58,6 +60,16 @@ def generate_plan(event_id: int = Query(..., ge=1)) -> dict:
         orchestrator = build_default_orchestrator()
         # 主要変数: plan_json は保存対象の最終計画dict。
         plan_json = orchestrator.run(event)
+        # 主要変数: retry_count は直近runで実施したretry回数。
+        retry_count = orchestrator.last_retry_count
+        # 主要変数: issues_codes はretry判定時のIssueコード一覧。
+        issues_codes = orchestrator.last_issue_codes
+        logger.info(
+            "plan.generate event_id=%s retry=%s issues=%s",
+            event_id,
+            retry_count,
+            issues_codes,
+        )
         # 主要変数: saved_plan はDBへ保存した計画レコード。
         saved_plan = insert_plan(
             settings.database_url,
@@ -67,6 +79,13 @@ def generate_plan(event_id: int = Query(..., ge=1)) -> dict:
         )
         return saved_plan["plan_json"]
     except PlanValidationError as exc:
+        issue_codes = [issue.code for issue in exc.issues]
+        logger.info(
+            "plan.generate event_id=%s retry=%s issues=%s",
+            event_id,
+            exc.retry_count,
+            issue_codes,
+        )
         raise HTTPException(
             status_code=422,
             detail={
