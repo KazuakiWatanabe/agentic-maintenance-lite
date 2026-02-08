@@ -55,7 +55,9 @@ class ReaderAgent:
         )
 
         if len(summary) < 100:
-            summary += " 追加情報不足時はunknownを維持しつつ、確認手順を保守側へ引き継ぐ。"
+            summary += (
+                " 追加情報不足時はunknownを維持しつつ、確認手順を保守側へ引き継ぐ。"
+            )
         if len(summary) > 300:
             summary = summary[:297] + "..."
         return summary

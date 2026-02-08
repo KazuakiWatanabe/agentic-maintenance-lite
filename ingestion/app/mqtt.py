@@ -87,7 +87,9 @@ class ApiForwarder:
                     attempt,
                 )
             except requests.RequestException as exc:
-                logger.warning("ingest request exception attempt=%s error=%s", attempt, exc)
+                logger.warning(
+                    "ingest request exception attempt=%s error=%s", attempt, exc
+                )
 
             if attempt < self._max_retries:
                 time.sleep(float(attempt))
