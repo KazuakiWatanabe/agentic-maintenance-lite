@@ -26,6 +26,24 @@ class PlannerAgent:
         v0.2ではLLMを使わず、固定ルールのみで計画を生成する。
     """
 
+    def __init__(self, enable_fault_injection: bool = False):
+        """Plannerの実行オプションを初期化する。
+
+        Args:
+            enable_fault_injection: Trueの場合、初回生成のみ意図的に不正値を混入する。
+
+        Returns:
+            None
+
+        Note:
+            fault injectionはOrchestrator生成ごとに初回1回だけ発動し、retry以降は発動しない。
+
+        Variables:
+            なし。
+        """
+        self._enable_fault_injection = enable_fault_injection
+        self._fault_injected_once = False
+
     def plan(
         self,
         event: dict[str, Any],
@@ -43,7 +61,7 @@ class PlannerAgent:
             MaintenancePlan: 生成または再生成した保守計画。
 
         Note:
-            初回生成かつ `payload.inject_invalid_priority_once` が真の場合のみ、検証用に不正priorityを1回だけ混入する。
+            fault injection有効時は初回生成時のみ不正priorityを1回だけ混入し、retryで補正可能な形にする。
 
         Variables:
             event_kind: event_typeを温度/振動/異常へ正規化した種別。
@@ -70,11 +88,14 @@ class PlannerAgent:
             "version": "0.2",
         }
 
-        # 主要変数: payload は初回リトライ検証用フラグを参照するためのイベントpayload。
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        inject_invalid_once = bool(payload.get("inject_invalid_priority_once"))
-        if issues is None and inject_invalid_once and plan_payload["tasks"]:
-            plan_payload["tasks"][0]["priority"] = 9
+        if (
+            issues is None
+            and self._enable_fault_injection
+            and not self._fault_injected_once
+            and plan_payload["tasks"]
+        ):
+            self._fault_injected_once = True
+            plan_payload["tasks"][0]["priority"] = 99
             return self._construct_without_validation(plan_payload)
 
         return MaintenancePlan.model_validate(plan_payload)

@@ -31,6 +31,7 @@ services:
     environment:
       # psycopg用。ホスト名はサービス名 postgres を使う
       DATABASE_URL: postgresql://agentic:agentic@postgres:5432/agentic
+      AGENTIC_FAULT_INJECTION: ${AGENTIC_FAULT_INJECTION:-0}
     ports:
       - "8000:8000"
     depends_on:

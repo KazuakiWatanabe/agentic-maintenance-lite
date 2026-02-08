@@ -9,6 +9,7 @@
     Validator issuesが残る場合は最大2回まで再生成を行い、超過時は例外を送出する。
 """
 
+import os
 from typing import Any
 
 from agentic.app.generator import GeneratorAgent
@@ -93,6 +94,10 @@ class MaintenanceOrchestrator:
         self._validator = validator
         self._generator = generator
         self._max_retries = max(0, max_retries)
+        # 主要変数: last_retry_count は直近runで実行したretry回数を保持する。
+        self.last_retry_count = 0
+        # 主要変数: last_issue_codes は直近runでretry原因となったIssueコード一覧を保持する。
+        self.last_issue_codes: list[str] = []
 
     def run(self, event: dict[str, Any]) -> dict:
         """単一イベントから検証済み保守計画dictを生成する。
@@ -114,8 +119,11 @@ class MaintenanceOrchestrator:
             plan: 現在試行中の保守計画モデル。
             issues: 直近のValidator結果。
             retry_count: 実施済みretry回数。
+            latest_issue_codes: 直近issuesから抽出したIssueコード一覧。
             validated_plan: 最終的にPydantic再検証を通した計画モデル。
         """
+        self.last_retry_count = 0
+        self.last_issue_codes = []
         # 主要変数: summary はPlannerへの入力となる一次要約。
         summary = self._reader.read_event(event)
         # 主要変数: plan はretry中に更新される現在の計画モデル。
@@ -124,11 +132,17 @@ class MaintenanceOrchestrator:
         issues = self._validator.validate(plan)
         # 主要変数: retry_count はPlanner再実行回数を示す。
         retry_count = 0
+        # 主要変数: latest_issue_codes はログやAPI層連携に使うIssueコード一覧。
+        latest_issue_codes: list[str] = []
 
         while issues and retry_count < self._max_retries:
+            latest_issue_codes = [issue.code for issue in issues]
             retry_count += 1
             plan = self._planner.plan(event, summary, issues=issues)
             issues = self._validator.validate(plan)
+
+        self.last_retry_count = retry_count
+        self.last_issue_codes = latest_issue_codes
 
         if issues:
             raise PlanValidationError(
@@ -149,15 +163,18 @@ def build_default_orchestrator() -> MaintenanceOrchestrator:
         MaintenanceOrchestrator: Reader/Planner/Validator/Generatorを束ねたOrchestrator。
 
     Note:
-        v0.2要件に合わせて `max_retries=2` 固定で生成する。
+        v0.2要件に合わせて `max_retries=2` 固定で生成し、`AGENTIC_FAULT_INJECTION=1` の場合のみfault injectionを有効化する。
 
     Variables:
+        fault_injection_enabled: 環境変数から判定したfault injection有効フラグ。
         orchestrator: 標準Agent構成のOrchestratorインスタンス。
     """
+    # 主要変数: fault_injection_enabled は検証専用のfault injection有効判定。
+    fault_injection_enabled = os.getenv("AGENTIC_FAULT_INJECTION", "0") == "1"
     # 主要変数: orchestrator はAPIから直接利用する標準実装。
     orchestrator = MaintenanceOrchestrator(
         reader=ReaderAgent(),
-        planner=PlannerAgent(),
+        planner=PlannerAgent(enable_fault_injection=fault_injection_enabled),
         validator=ValidatorAgent(),
         generator=GeneratorAgent(),
         max_retries=2,
