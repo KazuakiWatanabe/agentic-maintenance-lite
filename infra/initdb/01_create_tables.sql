@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS events (
+  id SERIAL PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  ts TIMESTAMPTZ NOT NULL,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS plans (
+  id SERIAL PRIMARY KEY,
+  event_id INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  plan_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
